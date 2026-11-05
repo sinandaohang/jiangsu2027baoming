@@ -3,7 +3,7 @@
 set -u
 
 export PATH="/opt/homebrew/bin:/Users/mengli/miniconda3/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-cd "/Users/mengli/Desktop/编制考试/招考信息/2027江苏省考考情分析" || exit 1
+cd "/Users/mengli/jiangsu2027" || exit 1
 
 mkdir -p logs
 LOG="logs/update.log"
