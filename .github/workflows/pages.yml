@@ -1,0 +1,58 @@
+name: 部署报名数据看板
+
+on:
+  schedule:
+    # 每小时第 23 分（UTC）读取 Neon 并重新部署
+    - cron: "23 * * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "导出最近多少次快照"
+        type: string
+        default: "24"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖
+        run: pip install psycopg2-binary
+
+      - name: 从 Neon 导出静态数据
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LIMIT: ${{ github.event.inputs.limit || '24' }}
+        run: python export_pages.py --limit "$LIMIT" --out public
+
+      - name: 上传 Pages 产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 部署到 GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
