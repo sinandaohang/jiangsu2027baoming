@@ -1,0 +1,12 @@
+# 会话 Cookie，切勿提交（常州已配置为 GitHub Secret: CZ_COOKIE）
+cookies.txt
+
+# 调试产物
+probe/
+post/
+*.html
+
+# Python
+__pycache__/
+*.pyc
+.venv/
