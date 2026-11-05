@@ -69,6 +69,16 @@
   .pager button.on{background:var(--accent);border-color:var(--accent);color:#fff}
   .pager .ellipsis{color:var(--muted);padding:0 2px}
   .footnote{margin:18px 2px 0;font-size:12.5px;line-height:1.8;color:var(--muted)}
+  .tip{
+    position:fixed;z-index:100;pointer-events:none;background:#141b26;color:#fff;
+    border-radius:8px;padding:9px 12px;font-size:12.5px;line-height:1.8;
+    box-shadow:0 8px 24px rgba(10,20,40,.25);max-width:400px;
+  }
+  .tip[hidden]{display:none}
+  .tip .trow{display:flex;gap:10px;white-space:nowrap}
+  .tip .k{color:#9fb0c8;min-width:34px}
+  .tip .v{color:#fff;font-variant-numeric:tabular-nums}
+  .tip .v .sub{color:#9fb0c8}
   @media (max-width:900px){.hero h1{font-size:21px}}
   @media (max-width:560px){
     .field{min-width:calc(50% - 7px);flex:1 1 calc(50% - 7px)}
@@ -85,6 +95,8 @@
     <p class="meta"><span id="snapMeta">数据加载中…</span> · 数据来源：江苏省人事考试网</p>
   </div>
 </header>
+
+<div class="tip" id="tip" hidden></div>
 
 <main class="wrap">
   <section class="card filters">
@@ -134,6 +146,7 @@
   <p class="footnote">
     热度依据官网「报名成功人数 / 招录人数」比例档位：红色 &gt; 50:1，黄色 3:1~50:1，蓝色 &lt; 3:1。
     报名数据滚动更新，页面展示所选数据时间的那一次快照；默认按热度从高到低排序。
+    将鼠标悬停在职位行上，可查看该岗位「变黄 / 变红」的时间；数据库中缺少对应历史时显示“未知”。
   </p>
 </main>
 
@@ -163,7 +176,8 @@
     snapMeta: document.getElementById("snapMeta"),
     summary: document.getElementById("summary"),
     tbody: document.getElementById("tbody"),
-    pager: document.getElementById("pager")
+    pager: document.getElementById("pager"),
+    tip: document.getElementById("tip")
   };
 
   function fmt(n) { return Number(n).toLocaleString("zh-CN"); }
@@ -178,6 +192,10 @@
       year: "numeric", month: "2-digit", day: "2-digit",
       hour: "2-digit", minute: "2-digit"
     });
+  }
+
+  function tsLabel(epoch) {
+    return snapshotTime(new Date(epoch * 1000).toISOString());
   }
 
   function option(value, label) {
@@ -257,12 +275,14 @@
 
   function buildRows(payload) {
     // rows: [city, district, district_code, dept_name, dept_code,
-    //        position_name, position_code, exam_ratio, recruit_count, ratio_color]
+    //        position_name, position_code, exam_ratio, recruit_count, ratio_color,
+    //        yellow_at, blue_at, red_at, yellow_before_at]（后四项为 epoch 秒或 null）
     rows = (payload.rows || []).map(function (r) {
       return {
         city: r[0], district: r[1], districtCode: r[2], dept: r[3], deptCode: r[4],
         pos: r[5], posCode: r[6], ratio: r[7], count: r[8] || 0,
-        color: r[9], heat: heatOf(r[9])
+        color: r[9], heat: heatOf(r[9]),
+        yellowAt: r[10], blueAt: r[11], redAt: r[12], yellowBeforeAt: r[13]
       };
     });
     rows.sort(function (a, b) {
@@ -328,7 +348,59 @@
     renderPager(totalPages, list.length);
   }
 
+  function eventRow(label, at, prevLabel, prevAt) {
+    var row = document.createElement("div");
+    row.className = "trow";
+
+    var k = document.createElement("span");
+    k.className = "k";
+    k.textContent = label;
+
+    var v = document.createElement("span");
+    v.className = "v";
+    if (at == null) {
+      v.textContent = "未知";
+    } else {
+      v.appendChild(document.createTextNode(tsLabel(at)));
+      if (prevAt != null) {
+        var sub = document.createElement("span");
+        sub.className = "sub";
+        sub.textContent = "（此前" + prevLabel + "：" + tsLabel(prevAt) + "）";
+        v.appendChild(sub);
+      }
+    }
+
+    row.appendChild(k);
+    row.appendChild(v);
+    return row;
+  }
+
+  function showTip(r, e) {
+    el.tip.innerHTML = "";
+    el.tip.appendChild(eventRow("变黄", r.yellowAt, "最后一次蓝", r.blueAt));
+    el.tip.appendChild(eventRow("变红", r.redAt, "最后一次黄", r.yellowBeforeAt));
+    el.tip.hidden = false;
+    placeTip(e);
+  }
+
+  function placeTip(e) {
+    var pad = 12;
+    var rect = el.tip.getBoundingClientRect();
+    var x = e.clientX + 16;
+    var y = e.clientY + 16;
+    if (x + rect.width > window.innerWidth - pad) { x = e.clientX - rect.width - 16; }
+    if (y + rect.height > window.innerHeight - pad) { y = e.clientY - rect.height - 16; }
+    el.tip.style.left = Math.max(pad, x) + "px";
+    el.tip.style.top = Math.max(pad, y) + "px";
+  }
+
+  function hideTip() {
+    el.tip.hidden = true;
+  }
+
   function renderTable(list) {
+    hideTip();
+
     var start = (state.page - 1) * PAGE_SIZE;
     var pageRows = list.slice(start, start + PAGE_SIZE);
     el.tbody.innerHTML = "";
@@ -386,6 +458,9 @@
       tr.appendChild(ratio);
       tr.appendChild(count);
       tr.appendChild(heat);
+      tr.addEventListener("mouseenter", function (e) { showTip(r, e); });
+      tr.addEventListener("mousemove", placeTip);
+      tr.addEventListener("mouseleave", hideTip);
       frag.appendChild(tr);
     });
     el.tbody.appendChild(frag);
@@ -467,6 +542,8 @@
     state.page = 1;
     applyFilters();
   });
+
+  window.addEventListener("scroll", hideTip, { passive: true });
 
   loadIndex();
 })();

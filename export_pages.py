@@ -26,6 +26,72 @@ ROW_COLUMNS = [
     "ratio_color",
 ]
 
+# 根据全部历史快照计算每个职位「变黄」「变红」的观测时间：
+# - 变黄：第一次观测到黄/红，且上一次观测为蓝（证明确实变过）
+# - 变红：第一次观测到红，且上一次观测为黄
+# 返回 yellow_at, blue_at, red_at, yellow_before_at（epoch 秒）
+HEAT_EVENTS_SQL = """
+WITH hist AS (
+    SELECT s.city, s.dept_code, s.position_code, s.position_name,
+           r.snapshot_at,
+           CASE s.ratio_color
+               WHEN '红' THEN 3 WHEN '黄' THEN 2 WHEN '蓝' THEN 1 ELSE 0
+           END AS rank
+    FROM job_snapshots s
+    JOIN scrape_runs r ON r.id = s.run_id
+    WHERE r.status IN ('ok', 'partial')
+),
+seq AS (
+    SELECT h.*,
+           LAG(rank) OVER w AS prev_rank,
+           LAG(snapshot_at) OVER w AS prev_at
+    FROM hist h
+    WINDOW w AS (
+        PARTITION BY city, dept_code, position_code, position_name
+        ORDER BY snapshot_at
+    )
+),
+yellow AS (
+    SELECT DISTINCT ON (city, dept_code, position_code, position_name)
+           city, dept_code, position_code, position_name,
+           EXTRACT(EPOCH FROM snapshot_at)::bigint AS yellow_at,
+           EXTRACT(EPOCH FROM prev_at)::bigint AS blue_at
+    FROM seq
+    WHERE rank >= 2 AND prev_rank = 1
+    ORDER BY city, dept_code, position_code, position_name, snapshot_at
+),
+red AS (
+    SELECT DISTINCT ON (city, dept_code, position_code, position_name)
+           city, dept_code, position_code, position_name,
+           EXTRACT(EPOCH FROM snapshot_at)::bigint AS red_at,
+           EXTRACT(EPOCH FROM prev_at)::bigint AS yellow_before_at
+    FROM seq
+    WHERE rank = 3 AND prev_rank = 2
+    ORDER BY city, dept_code, position_code, position_name, snapshot_at
+)
+SELECT COALESCE(y.city, r.city),
+       COALESCE(y.dept_code, r.dept_code),
+       COALESCE(y.position_code, r.position_code),
+       COALESCE(y.position_name, r.position_name),
+       y.yellow_at, y.blue_at, r.red_at, r.yellow_before_at
+FROM yellow y
+FULL OUTER JOIN red r
+  ON r.city = y.city
+ AND r.dept_code = y.dept_code
+ AND r.position_code = y.position_code
+ AND r.position_name = y.position_name
+"""
+
+
+def load_heat_events(cur):
+    cur.execute(HEAT_EVENTS_SQL)
+    events = {}
+    for city, dept_code, pos_code, pos_name, yellow_at, blue_at, red_at, yellow_before_at in cur.fetchall():
+        events[(city, dept_code, pos_code, pos_name)] = (
+            yellow_at, blue_at, red_at, yellow_before_at,
+        )
+    return events
+
 
 def database_url() -> str:
     url = os.environ.get("DATABASE_URL")
@@ -76,6 +142,8 @@ def main() -> int:
             if not runs:
                 sys.exit("数据库中没有可导出的快照")
 
+            events = load_heat_events(cur)
+
             index = {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "snapshots": [],
@@ -90,7 +158,18 @@ def main() -> int:
                     """,
                     (run_id,),
                 )
-                rows = [list(r) for r in cur.fetchall()]
+                snap_epoch = int(snap_at.timestamp())
+                rows = []
+                for r in cur.fetchall():
+                    key = (r[0], r[4], r[6], r[5])  # city, dept_code, pos_code, pos_name
+                    ev = events.get(key)
+                    yellow_at = blue_at = red_at = yellow_before_at = None
+                    if ev:
+                        if ev[0] is not None and ev[0] <= snap_epoch:
+                            yellow_at, blue_at = ev[0], ev[1]
+                        if ev[2] is not None and ev[2] <= snap_epoch:
+                            red_at, yellow_before_at = ev[2], ev[3]
+                    rows.append(list(r) + [yellow_at, blue_at, red_at, yellow_before_at])
                 dump_json(
                     snap_dir / f"{run_id}.json",
                     {
