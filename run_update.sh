@@ -17,6 +17,11 @@ say() { echo "[$(TZ=Asia/Shanghai date '+%F %T')] $*" >> "$LOG"; }
 say "===== 开始抓取 ====="
 if /Users/mengli/miniconda3/bin/python3 scrape.py >> "$LOG" 2>&1; then
   say "抓取并入库完成"
+  if gh workflow run pages.yml --repo sinandaohang/jiangsu2027baoming >> "$LOG" 2>&1; then
+    say "已触发 GitHub Pages 更新"
+  else
+    say "触发 GitHub Pages 更新失败，将在下一个整点重试"
+  fi
   exit 0
 fi
 
