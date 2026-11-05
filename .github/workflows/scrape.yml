@@ -1,11 +1,9 @@
 name: 更新江苏省考报名数据
 
 on:
-  schedule:
-    # 每小时一次。GitHub cron 为 UTC，下面表示 UTC 每小时第 7 分
-    # 即北京时间每小时 :07（数据源每小时更新一次）
-    - cron: "7 * * * *"
-  workflow_dispatch:   # 支持在 Actions 页面手动触发
+  # 定时任务改由本机 launchd 执行（海外节点访问国内站点不稳定）
+  # 此 workflow 仅保留手动触发，作为备用
+  workflow_dispatch:
     inputs:
       mode:
         description: "运行模式"

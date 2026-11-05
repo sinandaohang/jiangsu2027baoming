@@ -6,6 +6,10 @@ probe/
 post/
 *.html
 
+# 本机定时任务产物 / SSH 包装脚本
+logs/
+.git-ssh-wrapper.sh
+
 # Python
 __pycache__/
 *.pyc
