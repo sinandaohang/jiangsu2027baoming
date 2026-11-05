@@ -3,9 +3,11 @@
 
 数据来源: api.txt 中各市 /Home/RegBrowse 页面
 参数: jobAreaList = 6位地区代码(前2位地市 + 后4位区县)
-输出: 江苏省2027省考报名情况.xlsx / .csv
+输出: 写入 PostgreSQL（Neon），每次运行保存一份带时间戳的全量快照
 """
 
+import csv
+import io
 import os
 import re
 import sys
@@ -13,14 +15,94 @@ import time
 from pathlib import Path
 
 import pandas as pd
+import psycopg2
 import requests
 from bs4 import BeautifulSoup
 
 BASE_DIR = Path(__file__).resolve().parent
 API_FILE = BASE_DIR / "api.txt"
 COOKIE_FILE = BASE_DIR / "cookies.txt"
-OUT_XLSX = BASE_DIR / "江苏省2027省考报名情况.xlsx"
-OUT_CSV = BASE_DIR / "江苏省2027省考报名情况.csv"
+ENV_FILE = BASE_DIR / ".env"
+
+SNAPSHOT_COLUMNS = [
+    "run_id", "city", "district", "district_code", "dept_name", "dept_code",
+    "position_name", "position_code", "exam_ratio", "recruit_count",
+    "ratio_color", "ratio_tier",
+]
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS scrape_runs (
+    id                BIGSERIAL PRIMARY KEY,
+    snapshot_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    registration_date DATE NOT NULL DEFAULT ((now() AT TIME ZONE 'Asia/Shanghai')::date),
+    finished_at       TIMESTAMPTZ,
+    row_count         INTEGER NOT NULL DEFAULT 0,
+    status            TEXT NOT NULL DEFAULT 'running',
+    error_text        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_scrape_runs_time ON scrape_runs (snapshot_at DESC);
+
+CREATE TABLE IF NOT EXISTS job_snapshots (
+    id            BIGSERIAL PRIMARY KEY,
+    run_id        BIGINT NOT NULL REFERENCES scrape_runs(id) ON DELETE CASCADE,
+    city          TEXT NOT NULL,
+    district      TEXT NOT NULL,
+    district_code TEXT,
+    dept_name     TEXT,
+    dept_code     TEXT,
+    position_name TEXT,
+    position_code TEXT,
+    exam_ratio    INTEGER,
+    recruit_count INTEGER,
+    ratio_color   TEXT,
+    ratio_tier    TEXT,
+    UNIQUE (run_id, city, dept_code, position_code, position_name)
+);
+CREATE INDEX IF NOT EXISTS idx_job_snapshots_run ON job_snapshots (run_id);
+CREATE INDEX IF NOT EXISTS idx_job_snapshots_region ON job_snapshots (city, district);
+CREATE INDEX IF NOT EXISTS idx_job_snapshots_pos
+    ON job_snapshots (city, district_code, dept_code, position_code);
+
+CREATE OR REPLACE VIEW job_registration_snapshots AS
+SELECT r.id                AS run_id,
+       r.snapshot_at       AS snapshot_at,
+       r.registration_date AS registration_date,
+       s.city              AS "地市",
+       s.district          AS "区县",
+       s.district_code     AS "区县代码",
+       s.dept_name         AS "部门名称",
+       s.dept_code         AS "部门代码",
+       s.position_name     AS "职位名称",
+       s.position_code     AS "职位代码",
+       s.exam_ratio        AS "开考比例",
+       s.recruit_count     AS "招考人数",
+       s.ratio_color       AS "报名比例颜色",
+       s.ratio_tier        AS "报名比例档位"
+FROM job_snapshots s
+JOIN scrape_runs r ON r.id = s.run_id;
+"""
+
+
+def database_url() -> str:
+    """优先读环境变量，其次读项目根目录 .env（该文件不入库）。"""
+    url = os.environ.get("DATABASE_URL")
+    if url:
+        return url
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("DATABASE_URL="):
+                return line.split("=", 1)[1].strip()
+    sys.exit("找不到 DATABASE_URL（请在环境变量或 .env 中配置）")
+
+
+def connect():
+    return psycopg2.connect(database_url(), connect_timeout=15)
+
+
+def ensure_schema(conn):
+    with conn, conn.cursor() as cur:
+        cur.execute(SCHEMA_SQL)
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -179,18 +261,67 @@ def norm_city(name: str) -> str:
 
 
 def load_previous() -> pd.DataFrame:
-    """读取上一次的输出，用于站点临时故障时兜底。"""
-    if not OUT_CSV.exists():
-        return pd.DataFrame()
+    """读取数据库中最近一次快照，用于站点临时故障时兜底。"""
+    sql = """
+        SELECT "地市", "区县", "区县代码", "部门名称", "部门代码",
+               "职位名称", "职位代码", "开考比例", "招考人数",
+               "报名比例颜色", "报名比例档位"
+        FROM job_registration_snapshots
+        WHERE run_id = (
+            SELECT id FROM scrape_runs
+            WHERE status IN ('ok', 'partial')
+            ORDER BY id DESC
+            LIMIT 1
+        )
+    """
+    conn = None
     try:
-        df = pd.read_csv(OUT_CSV, dtype=str)
-        return df.drop(columns=["序号"], errors="ignore")
-    except Exception:
+        conn = connect()
+        return pd.read_sql_query(sql, conn)
+    except Exception as e:
+        print(f"  !! 读取上次快照失败: {e}")
         return pd.DataFrame()
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def save_snapshot(df: pd.DataFrame, status: str, error_text: str = "") -> int:
+    """把本次全量数据写入数据库，作为一个带时间戳的快照。"""
+    conn = connect()
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("INSERT INTO scrape_runs (status) VALUES ('running') RETURNING id")
+            run_id = cur.fetchone()[0]
+
+            cols = ["地市", "区县", "区县代码", "部门名称", "部门代码",
+                    "职位名称", "职位代码", "开考比例", "招考人数",
+                    "报名比例颜色", "报名比例档位"]
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            for r in df[cols].itertuples(index=False, name=None):
+                ratio = None if pd.isna(r[7]) else int(r[7])
+                count = None if pd.isna(r[8]) else int(r[8])
+                writer.writerow((run_id,) + r[:7] + (ratio, count) + r[9:])
+            buf.seek(0)
+
+            cur.copy_expert(
+                f"COPY job_snapshots ({', '.join(SNAPSHOT_COLUMNS)}) "
+                "FROM STDIN WITH (FORMAT csv)",
+                buf,
+            )
+            cur.execute(
+                "UPDATE scrape_runs SET row_count = %s, status = %s, "
+                "error_text = %s, finished_at = now() WHERE id = %s",
+                (len(df), status, error_text, run_id),
+            )
+        return run_id
+    finally:
+        conn.close()
 
 
 def main():
-    smoke = "--smoke" in sys.argv  # 连通测试：每个城市只请求第一个地区，不写文件
+    smoke = "--smoke" in sys.argv  # 连通测试：每个城市只请求第一个地区，不入库
     only = {norm_city(a) for a in sys.argv[1:] if not a.startswith("-")}  # 可选: 只抓指定城市
     req_timeout = SMOKE_TIMEOUT if smoke else TIMEOUT
     page_tries = 2 if smoke else 6
@@ -201,7 +332,18 @@ def main():
     if only:
         cities = [(c, u) for c, u in cities if norm_city(c) in only]
     cookies_map = {norm_city(k): v for k, v in parse_cookies(COOKIE_FILE).items()}
-    prev = load_previous()
+
+    prev = pd.DataFrame()
+    if not smoke:
+        try:
+            conn = connect()
+            try:
+                ensure_schema(conn)
+            finally:
+                conn.close()
+        except Exception as e:
+            sys.exit(f"数据库连接失败: {e}")
+        prev = load_previous()
 
     all_rows = []
     failed = []      # 所有失败的请求
@@ -311,19 +453,15 @@ def main():
     df["开考比例"] = pd.to_numeric(df["开考比例"], errors="coerce").astype("Int64")
     df["招考人数"] = pd.to_numeric(df["招考人数"], errors="coerce").astype("Int64")
     df = df.sort_values(["地市", "区县代码", "部门代码", "职位代码"], kind="stable")
-    df.insert(0, "序号", range(1, len(df) + 1))
 
-    df.to_csv(OUT_CSV, index=False, encoding="utf-8-sig")
-    with pd.ExcelWriter(OUT_XLSX, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="职位数据", index=False)
-        summary = (df.groupby(["地市", "报名比例档位"], observed=True)
-                     .agg(职位数=("职位名称", "size"), 招考人数=("招考人数", "sum"))
-                     .reset_index())
-        summary.to_excel(writer, sheet_name="统计", index=False)
+    status = "partial" if (unrecovered or only) else "ok"
+    error_text = "\n".join(f"{c}: {why}" for c, why in failed)
+    try:
+        run_id = save_snapshot(df, status, error_text)
+    except Exception as e:
+        sys.exit(f"写入数据库失败: {e}")
 
-    print(f"\n共 {len(df)} 个职位，已输出:")
-    print(f"  {OUT_XLSX}")
-    print(f"  {OUT_CSV}")
+    print(f"\n共 {len(df)} 个职位，已写入数据库快照 #{run_id}（{status}）")
     if failed:
         print("\n请求失败（已尽量沿用上次数据）:")
         for c, why in failed:

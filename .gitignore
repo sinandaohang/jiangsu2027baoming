@@ -1,14 +1,13 @@
-# 会话 Cookie，切勿提交（常州已配置为 GitHub Secret: CZ_COOKIE）
+# 数据库连接串与 Cookie，切勿提交
+.env
 cookies.txt
-
-# 调试产物
-probe/
-post/
-*.html
 
 # 本机定时任务产物 / SSH 包装脚本
 logs/
 .git-ssh-wrapper.sh
+
+# 本地生成的 Pages 产物
+public/
 
 # Python
 __pycache__/
