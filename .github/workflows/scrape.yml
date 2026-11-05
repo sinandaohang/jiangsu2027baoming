@@ -5,7 +5,13 @@ on:
     # 每小时一次。GitHub cron 为 UTC，下面表示 UTC 每小时第 7 分
     # 即北京时间每小时 :07（数据源每小时更新一次）
     - cron: "7 * * * *"
-  workflow_dispatch: {}   # 支持在 Actions 页面手动触发
+  workflow_dispatch:   # 支持在 Actions 页面手动触发
+    inputs:
+      mode:
+        description: "运行模式"
+        type: choice
+        options: [full, smoke]
+        default: full
 
 permissions:
   contents: write
@@ -42,7 +48,13 @@ jobs:
           fi
 
       - name: 抓取数据
-        run: python scrape.py
+        run: |
+          if [ "${{ github.event.inputs.mode }}" = "smoke" ]; then
+            echo "== 连通测试模式：每个城市只请求一次 =="
+            python scrape.py --smoke
+          else
+            python scrape.py
+          fi
 
       - name: 提交更新
         run: |

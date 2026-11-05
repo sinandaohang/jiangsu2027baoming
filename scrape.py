@@ -188,7 +188,8 @@ def load_previous() -> pd.DataFrame:
 
 
 def main():
-    only = {norm_city(a) for a in sys.argv[1:]}  # 可选: 只抓指定城市, 如 python3 scrape.py 常州
+    smoke = "--smoke" in sys.argv  # 连通测试：每个城市只请求第一个地区，不写文件
+    only = {norm_city(a) for a in sys.argv[1:] if not a.startswith("-")}  # 可选: 只抓指定城市
     cities = parse_api(API_FILE)
     if not cities:
         sys.exit("api.txt 中未解析到任何城市")
@@ -229,6 +230,19 @@ def main():
                 unrecovered.append(city)
             continue
 
+        if smoke:
+            code, label = options[0]
+            label_short = label.split("-", 1)[1] if "-" in label else "市级"
+            text = post_area(session, url, code, city_cookies)
+            if text is None:
+                print("  !! 连通测试失败")
+                failed.append((city, "连通测试失败"))
+            else:
+                rows = parse_rows(text, cname, label_short, code)
+                all_rows.extend(rows)
+                print(f"  ✓ 连通正常，{label_short} {len(rows)} 条（仅测试）")
+            continue
+
         city_rows = []
         for code, label in options:
             label_short = label.split("-", 1)[1] if "-" in label else "市级"
@@ -259,6 +273,14 @@ def main():
             uniq.append(r)
         print(f"  => {city} 合计 {len(uniq)} 个职位")
         all_rows.extend(uniq)
+
+    if smoke:
+        print(f"\n连通测试完成：成功 {len(cities) - len(failed)}/{len(cities)} 个城市")
+        if failed:
+            print("失败城市:")
+            for c, why in failed:
+                print(f"  {c}: {why}")
+        return 1 if failed else 0
 
     # 只抓指定城市时，保留其余城市的历史数据，避免输出被截断
     if only and not prev.empty:
