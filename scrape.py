@@ -6,6 +6,7 @@
 输出: 江苏省2027省考报名情况.xlsx / .csv
 """
 
+import os
 import re
 import sys
 import time
@@ -24,7 +25,8 @@ OUT_CSV = BASE_DIR / "江苏省2027省考报名情况.csv"
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 HEADERS = {"User-Agent": UA, "Accept-Language": "zh-CN,zh;q=0.9"}
-TIMEOUT = 30
+TIMEOUT = int(os.environ.get("SCRAPE_TIMEOUT", "30"))
+SMOKE_TIMEOUT = int(os.environ.get("SCRAPE_SMOKE_TIMEOUT", "8"))
 DELAY = 0.3
 
 COLOR_MAP = {
@@ -87,12 +89,12 @@ def new_session(cookies=None):
     return s
 
 
-def get_page(url: str, cookies=None, tries: int = 6):
+def get_page(url: str, cookies=None, tries: int = 6, timeout: int = TIMEOUT):
     """GET 页面，失败则换新会话重试（规避粘性 Cookie 指向坏节点）。"""
     for _ in range(tries):
         s = new_session(cookies)
         try:
-            r = s.get(url, timeout=TIMEOUT)
+            r = s.get(url, timeout=timeout)
             text = r.content.decode("utf-8", errors="ignore")
             if r.status_code == 200 and "运行时错误" not in text:
                 return s, text
@@ -111,18 +113,18 @@ def parse_area_options(html: str):
             for o in sel.find_all("option") if o.get("value")]
 
 
-def post_area(session, url, code, cookies=None, tries=3):
+def post_area(session, url, code, cookies=None, tries=3, timeout=TIMEOUT):
     for _ in range(tries):
         try:
             r = session.post(url, data={"jobAreaList": code},
-                             headers={"Referer": url}, timeout=TIMEOUT)
+                             headers={"Referer": url}, timeout=timeout)
             text = r.content.decode("utf-8", errors="ignore")
             if r.status_code == 200 and "运行时错误" not in text:
                 return text
         except requests.RequestException:
             pass
         # 会话可能被粘到坏节点，换新会话
-        s2, _ = get_page(url, cookies)
+        s2, _ = get_page(url, cookies, timeout=timeout)
         if s2 is not None:
             session = s2
         time.sleep(1)
@@ -190,6 +192,9 @@ def load_previous() -> pd.DataFrame:
 def main():
     smoke = "--smoke" in sys.argv  # 连通测试：每个城市只请求第一个地区，不写文件
     only = {norm_city(a) for a in sys.argv[1:] if not a.startswith("-")}  # 可选: 只抓指定城市
+    req_timeout = SMOKE_TIMEOUT if smoke else TIMEOUT
+    page_tries = 2 if smoke else 6
+    post_tries = 1 if smoke else 3
     cities = parse_api(API_FILE)
     if not cities:
         sys.exit("api.txt 中未解析到任何城市")
@@ -209,7 +214,7 @@ def main():
         prev_city = prev[prev["地市"] == cname] if not prev.empty else pd.DataFrame()
 
         print(f"[{city}] GET {url}")
-        session, html = get_page(url, city_cookies)
+        session, html = get_page(url, city_cookies, tries=page_tries, timeout=req_timeout)
         if session is None:
             failed.append((city, "页面打不开"))
             if not prev_city.empty:
@@ -233,7 +238,7 @@ def main():
         if smoke:
             code, label = options[0]
             label_short = label.split("-", 1)[1] if "-" in label else "市级"
-            text = post_area(session, url, code, city_cookies)
+            text = post_area(session, url, code, city_cookies, tries=post_tries, timeout=req_timeout)
             if text is None:
                 print("  !! 连通测试失败")
                 failed.append((city, "连通测试失败"))
@@ -246,7 +251,7 @@ def main():
         city_rows = []
         for code, label in options:
             label_short = label.split("-", 1)[1] if "-" in label else "市级"
-            text = post_area(session, url, code, city_cookies)
+            text = post_area(session, url, code, city_cookies, tries=post_tries, timeout=req_timeout)
             if text is None:
                 failed.append((city, f"{code} {label}"))
                 fallback = prev_city[prev_city["区县代码"] == code] if not prev_city.empty else pd.DataFrame()
