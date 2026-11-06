@@ -119,7 +119,7 @@
     </div>
     <div class="field search">
       <label for="q">关键词搜索</label>
-      <input id="q" type="search" placeholder="职位/部门名称；逗号分隔可同时查多个，空格需同时包含" autocomplete="off">
+      <input id="q" type="search" placeholder="职位/部门名称或职位代码；逗号分隔可同时查多个，空格需同时包含" autocomplete="off">
     </div>
   </section>
 
@@ -155,7 +155,7 @@
   <p class="footnote">
     热度依据官网「报名成功人数 / 招录人数」比例档位：红色 &gt; 50:1，黄色 3:1~50:1，蓝色 &lt; 3:1。
     报名数据滚动更新，页面展示所选数据时间的那一次快照；默认按热度从高到低排序。
-    关键词搜索匹配职位名称与部门名称：用逗号、顿号、分号或换行分隔可同时查询多个职位（任一命中即显示）；同一查询内用空格分隔的词需同时包含。
+    关键词搜索匹配职位名称、部门名称与职位代码：用逗号、顿号、分号或换行分隔可同时查询多个职位（任一命中即显示）；同一查询内用空格分隔的词需同时包含。
     将鼠标悬停在职位行上，可查看该岗位「变黄 / 变红」的时间；数据库中缺少对应历史时显示“未知”。
   </p>
 </main>
@@ -354,7 +354,7 @@
       if (state.city && r.city !== state.city) { return false; }
       if (state.district && r.district !== state.district) { return false; }
       if (groups.length) {
-        var text = (r.pos + " " + r.dept).toLowerCase();
+        var text = (r.pos + " " + r.dept + " " + r.posCode).toLowerCase();
         var hit = groups.some(function (tokens) {
           return tokens.every(function (t) { return text.indexOf(t) !== -1; });
         });
