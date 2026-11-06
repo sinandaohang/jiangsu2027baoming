@@ -580,16 +580,13 @@
     applyFilters();
   });
 
-  // 单行输入框会吞掉换行；粘贴多行职位清单时转成逗号，按多职位查询
+  // 单行输入框会吞掉换行；粘贴多行职位清单时整体替换为逗号分隔的查询
   el.q.addEventListener("paste", function (e) {
     var data = e.clipboardData || window.clipboardData;
     var text = data && data.getData("text");
     if (!text || !/[\r\n]/.test(text)) { return; }
     e.preventDefault();
-    var start = el.q.selectionStart;
-    var end = el.q.selectionEnd;
-    var insert = text.replace(/[\r\n]+/g, "，");
-    el.q.value = el.q.value.slice(0, start) + insert + el.q.value.slice(end);
+    el.q.value = text.replace(/[\r\n]+/g, "，");
     state.q = el.q.value.trim();
     state.page = 1;
     applyFilters();
