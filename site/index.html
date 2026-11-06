@@ -26,13 +26,17 @@
   .filters{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;padding:16px 18px;margin:-20px 0 16px;position:relative}
   .field{display:flex;flex-direction:column;gap:5px;min-width:170px}
   .field.time{min-width:230px}
+  .field.search{min-width:260px;flex:1 1 260px}
   .field label{font-size:12px;color:var(--muted);font-weight:600}
-  .field select{
+  .field select,
+  .field input[type="search"]{
     height:36px;padding:0 10px;border:1px solid #d4dae3;border-radius:8px;background:#fff;
     color:var(--text);font:inherit;outline:none;
   }
-  .field select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(31,95,214,.12)}
-  .field select:disabled{background:#f2f4f7;color:#9aa4b2}
+  .field select:focus,
+  .field input[type="search"]:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(31,95,214,.12)}
+  .field select:disabled,
+  .field input[type="search"]:disabled{background:#f2f4f7;color:#9aa4b2}
   .resultbar{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px;margin:0 2px 10px;font-size:13px;color:var(--muted)}
   #summary b{color:var(--text);font-variant-numeric:tabular-nums}
   .legend{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
@@ -82,7 +86,8 @@
   @media (max-width:900px){.hero h1{font-size:21px}}
   @media (max-width:560px){
     .field{min-width:calc(50% - 7px);flex:1 1 calc(50% - 7px)}
-    .field.time{flex-basis:100%}
+    .field.time,
+    .field.search{flex-basis:100%}
   }
 </style>
 </head>
@@ -111,6 +116,10 @@
     <div class="field">
       <label for="district">二级地区（区县）</label>
       <select id="district"></select>
+    </div>
+    <div class="field search">
+      <label for="q">关键词搜索</label>
+      <input id="q" type="search" placeholder="职位/部门名称；逗号分隔可同时查多个，空格需同时包含" autocomplete="off">
     </div>
   </section>
 
@@ -146,6 +155,7 @@
   <p class="footnote">
     热度依据官网「报名成功人数 / 招录人数」比例档位：红色 &gt; 50:1，黄色 3:1~50:1，蓝色 &lt; 3:1。
     报名数据滚动更新，页面展示所选数据时间的那一次快照；默认按热度从高到低排序。
+    关键词搜索匹配职位名称与部门名称：用逗号、顿号、分号或换行分隔可同时查询多个职位（任一命中即显示）；同一查询内用空格分隔的词需同时包含。
     将鼠标悬停在职位行上，可查看该岗位「变黄 / 变红」的时间；数据库中缺少对应历史时显示“未知”。
   </p>
 </main>
@@ -166,13 +176,14 @@
   var snapshots = [];
   var rows = [];
   var rowCache = {};
-  var state = { runId: null, city: "", district: "", page: 1 };
+  var state = { runId: null, city: "", district: "", q: "", page: 1 };
   var loadSeq = 0;
 
   var el = {
     time: document.getElementById("time"),
     city: document.getElementById("city"),
     district: document.getElementById("district"),
+    q: document.getElementById("q"),
     snapMeta: document.getElementById("snapMeta"),
     summary: document.getElementById("summary"),
     tbody: document.getElementById("tbody"),
@@ -230,7 +241,9 @@
     state.runId = meta.run_id;
     state.city = "";
     state.district = "";
+    state.q = "";
     state.page = 1;
+    el.q.value = "";
     el.time.value = String(meta.run_id);
     el.snapMeta.textContent = "数据时间：" + snapshotTime(meta.snapshot_at) +
       "（报名日期 " + meta.registration_date + "）";
@@ -268,6 +281,7 @@
     el.district.innerHTML = "";
     el.district.appendChild(option("", "全部区县"));
     el.district.disabled = true;
+    el.q.disabled = true;
     el.summary.innerHTML = "加载中…";
     el.tbody.innerHTML = '<tr><td colspan="7" class="empty">数据加载中…</td></tr>';
     el.pager.hidden = true;
@@ -301,6 +315,7 @@
     });
     el.city.innerHTML = "";
     el.city.disabled = false;
+    el.q.disabled = false;
     el.city.appendChild(option("", "全部地区"));
     order.forEach(function (c) { el.city.appendChild(option(c, c)); });
     buildDistrictOptions("");
@@ -325,10 +340,26 @@
     list.forEach(function (d) { el.district.appendChild(option(d, d)); });
   }
 
+  // 逗号/顿号/分号/换行分隔多个查询（任一命中即可）；
+  // 同一查询内用空格分隔多个关键词（需全部命中）。
+  function parseQuery(q) {
+    return q.split(/[,，、;；\n]+/).map(function (part) {
+      return part.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    }).filter(function (tokens) { return tokens.length; });
+  }
+
   function query() {
+    var groups = parseQuery(state.q);
     return rows.filter(function (r) {
       if (state.city && r.city !== state.city) { return false; }
       if (state.district && r.district !== state.district) { return false; }
+      if (groups.length) {
+        var text = (r.pos + " " + r.dept).toLowerCase();
+        var hit = groups.some(function (tokens) {
+          return tokens.every(function (t) { return text.indexOf(t) !== -1; });
+        });
+        if (!hit) { return false; }
+      }
       return true;
     });
   }
@@ -539,6 +570,27 @@
 
   el.district.addEventListener("change", function () {
     state.district = el.district.value;
+    state.page = 1;
+    applyFilters();
+  });
+
+  el.q.addEventListener("input", function () {
+    state.q = el.q.value.trim();
+    state.page = 1;
+    applyFilters();
+  });
+
+  // 单行输入框会吞掉换行；粘贴多行职位清单时转成逗号，按多职位查询
+  el.q.addEventListener("paste", function (e) {
+    var data = e.clipboardData || window.clipboardData;
+    var text = data && data.getData("text");
+    if (!text || !/[\r\n]/.test(text)) { return; }
+    e.preventDefault();
+    var start = el.q.selectionStart;
+    var end = el.q.selectionEnd;
+    var insert = text.replace(/[\r\n]+/g, "，");
+    el.q.value = el.q.value.slice(0, start) + insert + el.q.value.slice(end);
+    state.q = el.q.value.trim();
     state.page = 1;
     applyFilters();
   });
