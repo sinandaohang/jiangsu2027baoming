@@ -143,6 +143,7 @@
             <th scope="col">职位代码</th>
             <th scope="col">开考比例</th>
             <th scope="col" style="text-align:right">招考人数</th>
+            <th scope="col" style="text-align:right">报名人数</th>
             <th scope="col">岗位热度</th>
           </tr>
         </thead>
@@ -154,6 +155,7 @@
 
   <p class="footnote">
     热度依据官网「报名成功人数 / 招录人数」比例档位：红色 &gt; 50:1，黄色 3:1~50:1，蓝色 &lt; 3:1。
+    「报名人数」为官方最终公布的固定值，早期快照缺失时以最新公布值补全。
     报名数据滚动更新，页面展示所选数据时间的那一次快照；默认按热度从高到低排序。
     关键词搜索匹配职位名称、部门名称与职位代码：用逗号、顿号、分号或换行分隔可同时查询多个职位（任一命中即显示）；同一查询内用空格分隔的词需同时包含。
     将鼠标悬停在职位行上，可查看该岗位「变黄 / 变红」的时间；数据库中缺少对应历史时显示“未知”。
@@ -233,7 +235,7 @@
     }).catch(function (err) {
       el.snapMeta.textContent = "加载失败";
       el.summary.innerHTML = "<b>数据加载失败</b>：" + (err && err.message ? err.message : "未知错误");
-      el.tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无数据</td></tr>';
+      el.tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无数据</td></tr>';
     });
   }
 
@@ -258,7 +260,7 @@
     }).catch(function (err) {
       if (seq !== loadSeq) { return; }
       el.summary.innerHTML = "<b>数据加载失败</b>：" + (err && err.message ? err.message : "未知错误");
-      el.tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无数据</td></tr>';
+      el.tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无数据</td></tr>';
       el.pager.hidden = true;
     });
   }
@@ -283,20 +285,22 @@
     el.district.disabled = true;
     el.q.disabled = true;
     el.summary.innerHTML = "加载中…";
-    el.tbody.innerHTML = '<tr><td colspan="7" class="empty">数据加载中…</td></tr>';
+    el.tbody.innerHTML = '<tr><td colspan="8" class="empty">数据加载中…</td></tr>';
     el.pager.hidden = true;
   }
 
   function buildRows(payload) {
     // rows: [city, district, district_code, dept_name, dept_code,
-    //        position_name, position_code, exam_ratio, recruit_count, ratio_color,
-    //        yellow_at, blue_at, red_at, yellow_before_at]（后四项为 epoch 秒或 null）
+    //        position_name, position_code, exam_ratio, recruit_count,
+    //        applicant_count, ratio_color,
+    //        yellow_at, blue_at, red_at, yellow_before_at]（最后四项为 epoch 秒或 null）
     rows = (payload.rows || []).map(function (r) {
       return {
         city: r[0], district: r[1], districtCode: r[2], dept: r[3], deptCode: r[4],
         pos: r[5], posCode: r[6], ratio: r[7], count: r[8] || 0,
-        color: r[9], heat: heatOf(r[9]),
-        yellowAt: r[10], blueAt: r[11], redAt: r[12], yellowBeforeAt: r[13]
+        applicants: r[9] == null ? null : r[9],
+        color: r[10], heat: heatOf(r[10]),
+        yellowAt: r[11], blueAt: r[12], redAt: r[13], yellowBeforeAt: r[14]
       };
     });
     rows.sort(function (a, b) {
@@ -437,7 +441,7 @@
     el.tbody.innerHTML = "";
 
     if (!pageRows.length) {
-      el.tbody.innerHTML = '<tr><td colspan="7" class="empty">没有符合筛选条件的职位</td></tr>';
+      el.tbody.innerHTML = '<tr><td colspan="8" class="empty">没有符合筛选条件的职位</td></tr>';
       return;
     }
 
@@ -474,6 +478,10 @@
       count.className = "numcell";
       count.textContent = fmt(r.count);
 
+      var applicants = document.createElement("td");
+      applicants.className = "numcell";
+      applicants.textContent = r.applicants == null ? "—" : fmt(r.applicants);
+
       var heat = document.createElement("td");
       var badge = document.createElement("span");
       badge.className = "badge " + r.heat.cls;
@@ -488,6 +496,7 @@
       tr.appendChild(code);
       tr.appendChild(ratio);
       tr.appendChild(count);
+      tr.appendChild(applicants);
       tr.appendChild(heat);
       tr.addEventListener("mouseenter", function (e) { showTip(r, e); });
       tr.addEventListener("mousemove", placeTip);

@@ -27,7 +27,7 @@ ENV_FILE = BASE_DIR / ".env"
 SNAPSHOT_COLUMNS = [
     "run_id", "city", "district", "district_code", "dept_name", "dept_code",
     "position_name", "position_code", "exam_ratio", "recruit_count",
-    "ratio_color", "ratio_tier",
+    "applicant_count", "ratio_color", "ratio_tier",
 ]
 
 SCHEMA_SQL = """
@@ -54,10 +54,12 @@ CREATE TABLE IF NOT EXISTS job_snapshots (
     position_code TEXT,
     exam_ratio    INTEGER,
     recruit_count INTEGER,
+    applicant_count INTEGER,
     ratio_color   TEXT,
     ratio_tier    TEXT,
     UNIQUE (run_id, city, dept_code, position_code, position_name)
 );
+ALTER TABLE job_snapshots ADD COLUMN IF NOT EXISTS applicant_count INTEGER;
 CREATE INDEX IF NOT EXISTS idx_job_snapshots_run ON job_snapshots (run_id);
 CREATE INDEX IF NOT EXISTS idx_job_snapshots_region ON job_snapshots (city, district);
 CREATE INDEX IF NOT EXISTS idx_job_snapshots_pos
@@ -77,7 +79,8 @@ SELECT r.id                AS run_id,
        s.exam_ratio        AS "开考比例",
        s.recruit_count     AS "招考人数",
        s.ratio_color       AS "报名比例颜色",
-       s.ratio_tier        AS "报名比例档位"
+       s.ratio_tier        AS "报名比例档位",
+       s.applicant_count   AS "报名人数"
 FROM job_snapshots s
 JOIN scrape_runs r ON r.id = s.run_id;
 """
@@ -240,6 +243,8 @@ def parse_rows(html: str, city: str, area_label: str, area_code: str):
             if m:
                 color_raw = m.group(1).strip().lower()
             color, tier = COLOR_MAP.get(color_raw, ("未知", f"未知({color_raw})"))
+            # 颜色单元格的文本现在是具体报名人数（旧版为颜色词或空）
+            num = re.search(r"\d+", cells[4].get_text("", strip=True))
             rows.append({
                 "地市": city,
                 "区县": area_label,
@@ -250,6 +255,7 @@ def parse_rows(html: str, city: str, area_label: str, area_code: str):
                 "职位代码": pos_code,
                 "开考比例": cells[2].get_text(strip=True),
                 "招考人数": cells[3].get_text(strip=True),
+                "报名人数": int(num.group()) if num else None,
                 "报名比例颜色": color,
                 "报名比例档位": tier,
             })
@@ -264,7 +270,7 @@ def load_previous() -> pd.DataFrame:
     """读取数据库中最近一次快照，用于站点临时故障时兜底。"""
     sql = """
         SELECT "地市", "区县", "区县代码", "部门名称", "部门代码",
-               "职位名称", "职位代码", "开考比例", "招考人数",
+               "职位名称", "职位代码", "开考比例", "招考人数", "报名人数",
                "报名比例颜色", "报名比例档位"
         FROM job_registration_snapshots
         WHERE run_id = (
@@ -295,14 +301,15 @@ def save_snapshot(df: pd.DataFrame, status: str, error_text: str = "") -> int:
             run_id = cur.fetchone()[0]
 
             cols = ["地市", "区县", "区县代码", "部门名称", "部门代码",
-                    "职位名称", "职位代码", "开考比例", "招考人数",
+                    "职位名称", "职位代码", "开考比例", "招考人数", "报名人数",
                     "报名比例颜色", "报名比例档位"]
             buf = io.StringIO()
             writer = csv.writer(buf)
             for r in df[cols].itertuples(index=False, name=None):
                 ratio = None if pd.isna(r[7]) else int(r[7])
                 count = None if pd.isna(r[8]) else int(r[8])
-                writer.writerow((run_id,) + r[:7] + (ratio, count) + r[9:])
+                applicants = None if pd.isna(r[9]) else int(r[9])
+                writer.writerow((run_id,) + r[:7] + (ratio, count, applicants) + r[10:])
             buf.seek(0)
 
             cur.copy_expert(
@@ -452,6 +459,7 @@ def main():
     df = pd.DataFrame(deduped)
     df["开考比例"] = pd.to_numeric(df["开考比例"], errors="coerce").astype("Int64")
     df["招考人数"] = pd.to_numeric(df["招考人数"], errors="coerce").astype("Int64")
+    df["报名人数"] = pd.to_numeric(df["报名人数"], errors="coerce").astype("Int64")
     df = df.sort_values(["地市", "区县代码", "部门代码", "职位代码"], kind="stable")
 
     status = "partial" if (unrecovered or only) else "ok"

@@ -23,8 +23,17 @@ ENV_FILE = BASE_DIR / ".env"
 ROW_COLUMNS = [
     "city", "district", "district_code", "dept_name", "dept_code",
     "position_name", "position_code", "exam_ratio", "recruit_count",
-    "ratio_color",
+    "applicant_count", "ratio_color",
 ]
+
+# 官方最终公布的报名人数是固定值；旧快照没有该字段时，用最新已知值补全
+FINAL_COUNTS_SQL = """
+SELECT DISTINCT ON (city, dept_code, position_code, position_name)
+       city, dept_code, position_code, position_name, applicant_count
+FROM job_snapshots
+WHERE applicant_count IS NOT NULL
+ORDER BY city, dept_code, position_code, position_name, id DESC
+"""
 
 # 根据全部历史快照计算每个职位「变黄」「变红」的观测时间：
 # - 变黄：第一次观测到黄/红，且上一次观测为蓝（证明确实变过）
@@ -81,6 +90,14 @@ FULL OUTER JOIN red r
  AND r.position_code = y.position_code
  AND r.position_name = y.position_name
 """
+
+
+def load_final_counts(cur):
+    cur.execute(FINAL_COUNTS_SQL)
+    return {
+        (city, dept_code, pos_code, pos_name): count
+        for city, dept_code, pos_code, pos_name, count in cur.fetchall()
+    }
 
 
 def load_heat_events(cur):
@@ -143,6 +160,7 @@ def main() -> int:
                 sys.exit("数据库中没有可导出的快照")
 
             events = load_heat_events(cur)
+            final_counts = load_final_counts(cur)
 
             index = {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -169,7 +187,10 @@ def main() -> int:
                             yellow_at, blue_at = ev[0], ev[1]
                         if ev[2] is not None and ev[2] <= snap_epoch:
                             red_at, yellow_before_at = ev[2], ev[3]
-                    rows.append(list(r) + [yellow_at, blue_at, red_at, yellow_before_at])
+                    vals = list(r)
+                    if vals[9] is None:
+                        vals[9] = final_counts.get(key)
+                    rows.append(vals + [yellow_at, blue_at, red_at, yellow_before_at])
                 dump_json(
                     snap_dir / f"{run_id}.json",
                     {
